@@ -1,3 +1,4 @@
+# 1주차 실습 내용
 
 ## 실습 코드 다운로드
 
@@ -1198,7 +1199,9 @@ users:
 ## EKS Access Endpoint 변경 by Terraform
 
 적용 전의 EKS Endpoint Access는 아래처럼 구성됨.
+
 ![](./img/image-1.png)
+
 
 terraform에서 `endpoint_private_access = true` 로 변경하고 `terraform apply` 수행.
 ```bash
@@ -1335,7 +1338,9 @@ Plan: 0 to add, 5 to change, 0 to destroy.
 적용까지 7~8분정도 소요된다.
 
 적용 후의 EKS Endpoint Access는 아래처럼 구성됨.
+
 ![](./img/image-2.png)
+
 
 ## 실습 리소스 삭제
 ```bash
