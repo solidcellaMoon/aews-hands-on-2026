@@ -1,0 +1,17 @@
+# Ignore sensitive tfvars but keep the example
+terraform.tfvars
+**/terraform.tfvars
+!**/terraform.tfvars.example
+
+# Terraform artifacts
+.terraform/
+**/.terraform*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# Ignore local working directory
+local/
+**/local/
