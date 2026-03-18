@@ -15,3 +15,6 @@ crash.*.log
 # Ignore local working directory
 local/
 **/local/
+
+# Ignore hands-on directory
+aews/
