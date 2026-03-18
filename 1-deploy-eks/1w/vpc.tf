@@ -15,10 +15,10 @@ module "vpc" {
   enable_dns_support   = true # DNS 서버 활성화
   enable_dns_hostnames = true # 인스턴스에 DNS 이름 부여
 
-  public_subnets  = var.public_subnet_blocks
+  public_subnets = var.public_subnet_blocks
 
   enable_nat_gateway = false
-  
+
   manage_default_network_acl = false
 
   map_public_ip_on_launch = true
@@ -28,8 +28,8 @@ module "vpc" {
   }
 
   public_subnet_tags = {
-    "Name"                     = "${var.ClusterBaseName}-PublicSubnet"
-    "kubernetes.io/role/elb"   = "1"
+    "Name"                   = "${var.ClusterBaseName}-PublicSubnet"
+    "kubernetes.io/role/elb" = "1"
   }
 
   tags = {

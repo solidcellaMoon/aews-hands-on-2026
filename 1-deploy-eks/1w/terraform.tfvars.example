@@ -1,0 +1,13 @@
+KeyName         = "kp-gasida"
+ssh_access_cidr = "x.x.x.x/32"
+
+# Optional overrides
+# ClusterBaseName         = "myeks"
+# KubernetesVersion       = "1.34"
+# WorkerNodeInstanceType  = "t3.medium"
+# WorkerNodeCount         = 2
+# WorkerNodeVolumesize    = 30
+# TargetRegion            = "ap-northeast-2"
+# availability_zones      = ["ap-northeast-2a", "ap-northeast-2b", "ap-northeast-2c"]
+# VpcBlock                = "192.168.0.0/16"
+# public_subnet_blocks    = ["192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"]

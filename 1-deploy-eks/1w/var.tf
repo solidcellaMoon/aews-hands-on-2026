@@ -1,12 +1,14 @@
 variable "KeyName" {
   # aws ec2 describe-key-pairs --query "KeyPairs[].KeyName" --output text
-  # export TF_VAR_KeyName=kp-gasida
+  # Set in terraform.tfvars
+  # KeyName = "kp-gasida"
   description = "Name of an existing EC2 KeyPair to enable SSH access to the instances."
   type        = string
 }
 
 variable "ssh_access_cidr" {
-  # export TF_VAR_ssh_access_cidr=$(curl -s ipinfo.io/ip)/32
+  # Set in terraform.tfvars
+  # ssh_access_cidr = "x.x.x.x/32"
   description = "Allowed CIDR for SSH access"
   type        = string
 }
