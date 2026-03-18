@@ -49,10 +49,10 @@ module "eks" {
   subnet_ids = module.vpc.public_subnets
 
   endpoint_public_access  = true
-  endpoint_private_access = false # true
-  # endpoint_public_access_cidrs = [
-  #   var.ssh_access_cidr
-  # ]
+  endpoint_private_access = true
+  endpoint_public_access_cidrs = [
+    var.ssh_access_cidr
+  ]
 
   # controlplane log
   enabled_log_types = []
