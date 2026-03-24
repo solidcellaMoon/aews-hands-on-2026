@@ -44,7 +44,7 @@ Added new context arn:aws:eks:ap-northeast-2:xxxxxxxxx:cluster/myeks to /Users/x
 ❯ cat ~/.kube/config | grep current-context | awk '{print $2}'
 arn:aws:eks:ap-northeast-2:xxxxxxx:cluster/myeks
 
-❯ ❯ k config rename-context $(cat ~/.kube/config | grep current-context | awk '{print $2}') myeks
+❯ k config rename-context $(cat ~/.kube/config | grep current-context | awk '{print $2}') myeks
 Context "arn:aws:eks:ap-northeast-2:xxxxxxxx:cluster/myeks" renamed to "myeks".
 
 ❯ cat ~/.kube/config | grep current-context
