@@ -18,10 +18,10 @@ module "vpc" {
   public_subnets  = var.public_subnet_blocks
   private_subnets = var.private_subnet_blocks
 
-  enable_nat_gateway = false # true
-  single_nat_gateway = true
+  enable_nat_gateway     = false # true
+  single_nat_gateway     = true
   one_nat_gateway_per_az = false
-  
+
   manage_default_network_acl = false
 
   map_public_ip_on_launch = true
@@ -35,12 +35,12 @@ module "vpc" {
   }
 
   public_subnet_tags = {
-    "Name"                     = "${var.ClusterBaseName}-PublicSubnet"
-    "kubernetes.io/role/elb"   = "1"
+    "Name"                   = "${var.ClusterBaseName}-PublicSubnet"
+    "kubernetes.io/role/elb" = "1"
   }
 
   private_subnet_tags = {
-    "Name"                             = "${var.ClusterBaseName}-PrivateSubnet"
+    "Name"                            = "${var.ClusterBaseName}-PrivateSubnet"
     "kubernetes.io/role/internal-elb" = "1"
   }
 
