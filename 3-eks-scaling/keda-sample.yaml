@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+spec:
+  selector:
+    matchLabels:
+      run: php-apache
+  template:
+    metadata:
+      labels:
+        run: php-apache
+    spec:
+      containers:
+      - name: php-apache
+        image: registry.k8s.io/hpa-example
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 500m
+          requests:
+            cpu: 200m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+  labels:
+    run: php-apache
+spec:
+  ports:
+  - port: 80
+  selector:
+    run: php-apache
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: php-apache-cron-scaled
+spec:
+  minReplicaCount: 0
+  maxReplicaCount: 2  # Specifies the maximum number of replicas to scale up to (defaults to 100).
+  pollingInterval: 30  # Specifies how often KEDA should check for scaling events
+  cooldownPeriod: 300  # Specifies the cool-down period in seconds after a scaling event
+  scaleTargetRef:  # Identifies the Kubernetes deployment or other resource that should be scaled.
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  triggers:  # Defines the specific configuration for your chosen scaler, including any required parameters or settings
+  - type: cron
+    metadata:
+      timezone: Asia/Seoul
+      start: 00,15,30,45 * * * *
+      end: 05,20,35,50 * * * *
+      desiredReplicas: "1"
