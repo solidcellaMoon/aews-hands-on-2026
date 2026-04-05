@@ -1,16 +1,18 @@
 # 3주차 실습 내용
 EKS Scaling
 
-- [3주차 실습 내용](#3주차-실습-내용)
-  - [0. init](#0-init)
-    - [1. EKS 자격증명 설정](#1-eks-자격증명-설정)
-    - [2. AWS LoadBalancer Controller 설치](#2-aws-loadbalancer-controller-설치)
-    - [3. kube-prometheus-stack 설치](#3-kube-prometheus-stack-설치)
-  - [1. EKS 관리형 노드 그룹](#1-eks-관리형-노드-그룹)
-  - [2. HPA (Horizontal Pod Autoscaler)](#2-hpa-horizontal-pod-autoscaler)
-  - [3. VPA (Vertical Pod Autoscaler)](#3-vpa-vertical-pod-autoscaler)
-  - [4. KEDA (Kubernetes Event-driven Autoscaling)](#4-keda-kubernetes-event-driven-autoscaling)
-  - [5. CPA - Cluster Proportional Autoscaler](#5-cpa---cluster-proportional-autoscaler)
+## 목차
+
+- [0. init](#0-init)
+  - [1. EKS 자격증명 설정](#1-eks-자격증명-설정)
+  - [2. AWS LoadBalancer Controller 설치](#2-aws-loadbalancer-controller-설치)
+  - [3. kube-prometheus-stack 설치](#3-kube-prometheus-stack-설치)
+- [1. EKS 관리형 노드 그룹](#1-eks-관리형-노드-그룹)
+- [2. HPA (Horizontal Pod Autoscaler)](#2-hpa-horizontal-pod-autoscaler)
+- [3. VPA (Vertical Pod Autoscaler)](#3-vpa-vertical-pod-autoscaler)
+- [4. KEDA (Kubernetes Event-driven Autoscaling)](#4-keda-kubernetes-event-driven-autoscaling)
+- [5. CPA (Cluster Proportional Autoscaler)](#5-cpa-cluster-proportional-autoscaler)
+- [6. Karpenter](#6-karpenter)
 
 
 ## 0. init
@@ -341,6 +343,7 @@ pod "busybox" deleted
 ## 2. HPA (Horizontal Pod Autoscaler)
 
 샘플 워크로드를 배포해서 확인한다.
+
 ```bash
 kubectl apply -f hpa-sample.yaml
 
@@ -994,7 +997,9 @@ pod/keda-operator-metrics-apiserver-554cb87754-4xqps   1/1     Running   0      
 }
 ```
 
-## 5. CPA - Cluster Proportional Autoscaler
+## 5. CPA (Cluster Proportional Autoscaler)
+
+샘플 워크로드를 먼저 배포한 후, CPA를 배포하여 기능을 확인한다.
 
 ```bash
 # 먼저 CPA 타겟이 필요하기에, 샘플 워크로드부터 배포한다.
@@ -1022,4 +1027,308 @@ nginx-deployment-57f959d4d7-b47g9                  1/1     Running     0        
 nginx-deployment-57f959d4d7-gt8cz                  1/1     Running     0          2m9s
 nginx-deployment-57f959d4d7-k9plb                  1/1     Running     0          3m6s
 nginx-deployment-57f959d4d7-tjlng                  1/1     Running     0          2m9s
+```
+
+## 6. Karpenter
+
+환경변수를 설정한다.
+
+```bash
+# 작업 디렉터리
+cd ..
+mkdir karpenter
+cd karpenter
+
+# 변수 설정
+export KARPENTER_NAMESPACE="kube-system"
+export KARPENTER_VERSION="1.10.0"
+export K8S_VERSION="1.34"
+
+export AWS_PARTITION="aws" # if you are not using standard partitions, you may need to configure to aws-cn / aws-us-gov
+export CLUSTER_NAME="my-karpenter-demo"
+export AWS_DEFAULT_REGION="ap-northeast-2"
+export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+export TEMPOUT="$(mktemp)"
+export ALIAS_VERSION="$(
+  aws ec2 describe-images \
+    --image-ids "$(
+      aws ssm get-parameter \
+        --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id" \
+        --query 'Parameter.Value' \
+        --output text
+    )" \
+    --query 'Images[0].Name' \
+    --output text \
+  | sed -E 's/^.*(v[0-9]+).*$/\1/'
+)"
+
+# 확인
+❯ echo "${KARPENTER_NAMESPACE}" "${KARPENTER_VERSION}" "${K8S_VERSION}" "${CLUSTER_NAME}" "${AWS_DEFAULT_REGION}" "${AWS_ACCOUNT_ID}" "${TEMPOUT}" "${ALIAS_VERSION}"
+kube-system 1.10.0 1.34 my-karpenter-demo ap-northeast-2 xxxxxx /var/folders/8s/3tq9_69j3pj4qngycb5pyl3m0000gn/T/tmp.4eZP6sqsEM v20260318
+```
+
+실습용 EKS는 eksctl로 생성한다.
+
+```bash
+# CloudFormation 스택으로 IAM Policy/Role, SQS, Event/Rule 생성 : 3분 정도 소요
+curl -fsSL https://raw.githubusercontent.com/aws/karpenter-provider-aws/v"${KARPENTER_VERSION}"/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml  > "${TEMPOUT}" \
+&& aws cloudformation deploy \
+  --stack-name "Karpenter-${CLUSTER_NAME}" \
+  --template-file "${TEMPOUT}" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides "ClusterName=${CLUSTER_NAME}"
+
+# 클러스터 생성 : EKS 클러스터 생성 15분 정도 소요
+eksctl create cluster -f eks.yaml
+
+# eks 배포 확인
+❯ eksctl get cluster
+NAME                     REGION          EKSCTL CREATED
+my-karpenter-demo       ap-northeast-2  True
+
+❯ eksctl get nodegroup --cluster $CLUSTER_NAME
+CLUSTER                        NODEGROUP               STATUS  CREATED                 MIN SIZE        MAX SIZE        DESIRED CAPACITY        INSTANCE TYPE   IMAGE ID                ASG NAME                                                        TYPE
+my-karpenter-demo       my-karpenter-demo-ng    ACTIVE  2026-04-05T12:08:17Z    1               10              2                       m5.large        AL2023_x86_64_STANDARD  eks-my-karpenter-demo-ng-34ceaec5-9575-7be2-f30a-be4d00767e97   managed
+
+❯ eksctl get iamidentitymapping --cluster $CLUSTER_NAME
+ARN                                                                                           USERNAME                                GROUPS                                  ACCOUNT
+arn:aws:iam::xxxxxxxx:role/KarpenterNodeRole-my-karpenter-demo                              system:node:{{EC2PrivateDNSName}}       system:bootstrappers,system:nodes       
+arn:aws:iam::xxxxxxxx:role/eksctl-my-karpenter-demo-nodegroup-NodeInstanceRole-pvcoKV5Ot5EY system:node:{{EC2PrivateDNSName}}       system:bootstrappers,system:nodes       
+
+
+# config rename-context
+kubectl ctx
+kubectl config rename-context "<각자 자신의 IAM User>@<자신의 Nickname>-karpenter-demo.ap-northeast-2.eksctl.io" "karpenter-demo"
+
+# k8s 확인
+❯ k get no   
+NAME                                                STATUS   ROLES    AGE     VERSION
+ip-192-168-46-140.ap-northeast-2.compute.internal   Ready    <none>   5m59s   v1.34.4-eks-f69f56f
+ip-192-168-93-248.ap-northeast-2.compute.internal   Ready    <none>   5m58s   v1.34.4-eks-f69f56f
+
+❯ k get node --label-columns=node.kubernetes.io/instance-type,eks.amazonaws.com/capacityType,topology.kubernetes.io/zone
+NAME                                                STATUS   ROLES    AGE     VERSION               INSTANCE-TYPE   CAPACITYTYPE   ZONE
+ip-192-168-46-140.ap-northeast-2.compute.internal   Ready    <none>   6m18s   v1.34.4-eks-f69f56f   m5.large        ON_DEMAND      ap-northeast-2d
+ip-192-168-93-248.ap-northeast-2.compute.internal   Ready    <none>   6m17s   v1.34.4-eks-f69f56f   m5.large        ON_DEMAND      ap-northeast-2a
+```
+
+karpenter를 설치한다.
+
+```bash
+# Karpenter 설치를 위한 변수 설정 및 확인
+export CLUSTER_ENDPOINT="$(aws eks describe-cluster --name "${CLUSTER_NAME}" --query "cluster.endpoint" --output text)"
+export KARPENTER_IAM_ROLE_ARN="arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-karpenter"
+echo "${CLUSTER_ENDPOINT} ${KARPENTER_IAM_ROLE_ARN}"
+
+# karpenter 설치
+❯ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter --version "${KARPENTER_VERSION}" --namespace "${KARPENTER_NAMESPACE}" --create-namespace \
+  --set "settings.clusterName=${CLUSTER_NAME}" \
+  --set "settings.interruptionQueue=${CLUSTER_NAME}" \
+  --set controller.resources.requests.cpu=1 \
+  --set controller.resources.requests.memory=1Gi \
+  --set controller.resources.limits.cpu=1 \
+  --set controller.resources.limits.memory=1Gi \
+  --wait
+
+Release "karpenter" does not exist. Installing it now.
+Pulled: public.ecr.aws/karpenter/karpenter:1.10.0
+Digest: sha256:199866c04a14b6769c9d98fe9647a861cd49f296b35b8dcc585650e0d4d27f04
+NAME: karpenter
+LAST DEPLOYED: Sun Apr  5 21:16:01 2026
+NAMESPACE: kube-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+
+# 확인
+❯ k get all -n $KARPENTER_NAMESPACE
+NAME                                 READY   STATUS    RESTARTS   AGE
+pod/aws-node-b5kh8                   2/2     Running   0          7m27s
+pod/aws-node-j5hvz                   2/2     Running   0          7m26s
+pod/coredns-cc56d5f8b-2pjmr          1/1     Running   0          11m
+pod/coredns-cc56d5f8b-g2ckf          1/1     Running   0          11m
+pod/eks-pod-identity-agent-8cjpc     1/1     Running   0          7m27s
+pod/eks-pod-identity-agent-l259m     1/1     Running   0          7m26s
+pod/karpenter-9dd99769d-4pthf        1/1     Running   0          38s
+pod/karpenter-9dd99769d-4rs7l        1/1     Running   0          38s
+pod/kube-proxy-f6p9b                 1/1     Running   0          7m26s
+pod/kube-proxy-z8sxr                 1/1     Running   0          7m27s
+pod/metrics-server-955497767-8smfr   1/1     Running   0          11m
+pod/metrics-server-955497767-p7hd7   1/1     Running   0          11m
+
+NAME                                TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                  AGE
+service/eks-extension-metrics-api   ClusterIP   10.100.113.37    <none>        443/TCP                  13m
+service/karpenter                   ClusterIP   10.100.124.110   <none>        8080/TCP                 39s
+service/kube-dns                    ClusterIP   10.100.0.10      <none>        53/UDP,53/TCP,9153/TCP   11m
+service/metrics-server              ClusterIP   10.100.91.137    <none>        443/TCP                  11m
+
+NAME                                    DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/aws-node                 2         2         2       2            2           <none>          11m
+daemonset.apps/eks-pod-identity-agent   2         2         2       2            2           <none>          11m
+daemonset.apps/kube-proxy               2         2         2       2            2           <none>          11m
+
+NAME                             READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/coredns          2/2     2            2           11m
+deployment.apps/karpenter        2/2     2            2           39s
+deployment.apps/metrics-server   2/2     2            2           11m
+
+NAME                                       DESIRED   CURRENT   READY   AGE
+replicaset.apps/coredns-cc56d5f8b          2         2         2       11m
+replicaset.apps/karpenter-9dd99769d        2         2         2       39s
+replicaset.apps/metrics-server-955497767   2         2         2       11m
+
+kubectl get crd | grep karpenter
+```
+
+이어서 NodePool을 통해 노드가 오토스케일링 되는지 확인한다.
+
+```bash
+# 변수 확인
+echo $ALIAS_VERSION
+
+# NodePool, EC2NodeClass 생성
+cat <<EOF | envsubst | kubectl apply -f -
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+      expireAfter: 720h # 30 * 24h = 720h
+  limits:
+    cpu: 1000
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"       # replace with your cluster name
+  amiSelectorTerms:
+    - alias: "al2023@${ALIAS_VERSION}"            # ex) al2023@latest 
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}" # replace with your cluster name
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}" # replace with your cluster name
+EOF
+
+
+# 확인 
+❯ k get nodepool,ec2nodeclass,nodeclaims
+NAME                            NODECLASS   NODES   READY   AGE
+nodepool.karpenter.sh/default   default     0       False   13s
+
+NAME                                     READY     AGE
+ec2nodeclass.karpenter.k8s.aws/default   Unknown   13s
+```
+
+Scale Up Deployment!!
+
+```bash
+❯ k apply -f app-sample.yaml
+deployment.apps/inflate created
+
+# Scale up
+❯ k get pod
+No resources found in default namespace.
+
+❯ k scale deployment inflate --replicas 5
+deployment.apps/inflate scaled
+
+❯ k get pod                              
+NAME                      READY   STATUS    RESTARTS   AGE
+inflate-7bb66b64f-m6r86   0/1     Pending   0          7s
+inflate-7bb66b64f-qjrw6   0/1     Pending   0          7s
+inflate-7bb66b64f-qvvf7   0/1     Pending   0          7s
+inflate-7bb66b64f-r9hk9   0/1     Pending   0          7s
+inflate-7bb66b64f-wzp6l   0/1     Pending   0          7s
+
+❯ k get pod
+NAME                      READY   STATUS              RESTARTS   AGE
+inflate-7bb66b64f-m6r86   0/1     ContainerCreating   0          34s
+inflate-7bb66b64f-qjrw6   0/1     ContainerCreating   0          34s
+inflate-7bb66b64f-qvvf7   0/1     ContainerCreating   0          34s
+inflate-7bb66b64f-r9hk9   0/1     ContainerCreating   0          34s
+inflate-7bb66b64f-wzp6l   0/1     ContainerCreating   0          34s
+
+❯ k get pod
+NAME                      READY   STATUS    RESTARTS   AGE
+inflate-7bb66b64f-m6r86   1/1     Running   0          70s
+inflate-7bb66b64f-qjrw6   1/1     Running   0          70s
+inflate-7bb66b64f-qvvf7   1/1     Running   0          70s
+inflate-7bb66b64f-r9hk9   1/1     Running   0          70s
+inflate-7bb66b64f-wzp6l   1/1     Running   0          70s
+
+# 출력 로그는 별도로 분석
+kubectl logs -f -n "${KARPENTER_NAMESPACE}" -l app.kubernetes.io/name=karpenter -c controller
+kubectl logs -f -n "${KARPENTER_NAMESPACE}" -l app.kubernetes.io/name=karpenter -c controller | jq '.'
+kubectl logs -n "${KARPENTER_NAMESPACE}" -l app.kubernetes.io/name=karpenter -c controller | grep
+
+# 확인
+❯ k get nodeclaims
+NAME            TYPE          CAPACITY    ZONE              NODE                                                 READY   AGE
+default-g67wq   c5a.2xlarge   on-demand   ap-northeast-2b   ip-192-168-104-167.ap-northeast-2.compute.internal   True    81s
+
+❯ k get node -l karpenter.sh/registered=true -o jsonpath="{.items[0].metadata.labels}" | jq '.'
+{
+  "beta.kubernetes.io/arch": "amd64",
+  "beta.kubernetes.io/instance-type": "c5a.2xlarge",
+  "beta.kubernetes.io/os": "linux",
+  "failure-domain.beta.kubernetes.io/region": "ap-northeast-2",
+  "failure-domain.beta.kubernetes.io/zone": "ap-northeast-2b",
+  "k8s.io/cloud-provider-aws": "f034d8bd23e3b0bafa04dd0d43111a2e",
+  "karpenter.k8s.aws/ec2nodeclass": "default",
+  "karpenter.k8s.aws/instance-capability-flex": "false",
+  "karpenter.k8s.aws/instance-category": "c",
+  "karpenter.k8s.aws/instance-cpu": "8",
+  "karpenter.k8s.aws/instance-cpu-manufacturer": "amd",
+  "karpenter.k8s.aws/instance-cpu-sustained-clock-speed-mhz": "3300",
+  "karpenter.k8s.aws/instance-ebs-bandwidth": "3170",
+  "karpenter.k8s.aws/instance-encryption-in-transit-supported": "true",
+  "karpenter.k8s.aws/instance-family": "c5a",
+  "karpenter.k8s.aws/instance-generation": "5",
+  "karpenter.k8s.aws/instance-hypervisor": "nitro",
+  "karpenter.k8s.aws/instance-memory": "16384",
+  "karpenter.k8s.aws/instance-network-bandwidth": "2500",
+  "karpenter.k8s.aws/instance-size": "2xlarge",
+  "karpenter.k8s.aws/instance-tenancy": "default",
+  "karpenter.sh/capacity-type": "on-demand",
+  "karpenter.sh/do-not-sync-taints": "true",
+  "karpenter.sh/initialized": "true",
+  "karpenter.sh/nodepool": "default",
+  "karpenter.sh/registered": "true",
+  "kubernetes.io/arch": "amd64",
+  "kubernetes.io/hostname": "ip-192-168-104-167.ap-northeast-2.compute.internal",
+  "kubernetes.io/os": "linux",
+  "node.kubernetes.io/instance-type": "c5a.2xlarge",
+  "topology.k8s.aws/zone-id": "apne2-az2",
+  "topology.kubernetes.io/region": "ap-northeast-2",
+  "topology.kubernetes.io/zone": "ap-northeast-2b"
+}
 ```
