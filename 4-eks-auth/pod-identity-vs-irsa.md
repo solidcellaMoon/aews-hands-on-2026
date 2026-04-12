@@ -853,6 +853,8 @@ my-bucket-1       my-bucket-2      my-bucket-3
 
 ## 6. Pod Identity ABAC (Attribute Based Access Control)
 
+![alt text](./img/image-1.png)
+
 Pod Identity는 IAM Role 레벨에서 아래 세션 태그를 통해 ABAC 구현이 가능하다.
 
 - https://docs.aws.amazon.com/ko_kr/eks/latest/best-practices/identity-and-access-management.html#_identities_and_credentials_for_eks_pods
