@@ -40,8 +40,126 @@
 
 ### IAM 리소스 기준 비교
 
-(나중에 추가)
+기준 예시
+- 공통 권한 정책: S3 버킷 목록 조회 권한 `s3:ListAllMyBuckets`
+- Pod Identity 서비스어카운트: `default/pod-identity-demo`
+- IRSA 서비스어카운트: `default/irsa-demo`
 
+요약
+| 항목 | Pod Identity | IRSA |
+| --- | --- | --- |
+| 공통 권한 정책 | `aws_iam_policy` | `aws_iam_policy` |
+| IAM Role | 생성 | 생성 |
+| IAM Role trust principal | `Service: pods.eks.amazonaws.com` | `Federated: <OIDC provider ARN>` |
+| STS Action | `sts:AssumeRole`, `sts:TagSession` | `sts:AssumeRoleWithWebIdentity` |
+| trust policy에 서비스어카운트 직접 명시 | 없음 | 있음 (`sub`) |
+| OIDC Provider 필요 여부 | 불필요 | 필요 |
+| 서비스어카운트 연결 방식 | `aws_eks_pod_identity_association` | ServiceAccount annotation |
+| 멀티 클러스터 role 재사용 | 상대적으로 쉬움 | trust policy 확장 필요 |
+
+#### 공통으로 생성되는 IAM 리소스
+
+두 방식 모두 실제 AWS 권한은 동일한 IAM Policy에 담을 수 있다.
+- 권한 정책 자체는 Pod Identity와 IRSA가 동일하게 재사용 가능하다.
+- 차이는 IAM Role의 trust policy와 Kubernetes 서비스어카운트 연결 방식에서 발생한다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListBuckets",
+      "Effect": "Allow",
+      "Action": ["s3:ListAllMyBuckets"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+#### Pod Identity에서 생성되는 IAM 리소스
+
+Trust policy 특징
+- OIDC provider를 신뢰하지 않는다.
+- AWS 서비스 Principal `pods.eks.amazonaws.com` 를 신뢰한다.
+- `sts:AssumeRole` 과 `sts:TagSession` 을 허용한다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "pods.eks.amazonaws.com"
+      },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ]
+    }
+  ]
+}
+```
+
+연결 방식
+- IAM 리소스 외에 `aws_eks_pod_identity_association` 이 생성된다.
+- 이 `association` 리소스가 `cluster + namespace + service account + role arn` 을 연결한다.
+- 즉, 서비스어카운트 식별 정보가 IAM Role trust policy 안에 직접 들어가지 않는다.
+
+정리
+- IAM 관점에서 Pod Identity는 trust policy가 단순하다.
+- 같은 IAM Role을 여러 EKS 클러스터에서 재사용하기 쉽다.
+- 클러스터가 늘어나도 role trust policy를 다시 수정할 필요가 없다.
+
+#### IRSA에서 생성되는 IAM 리소스
+
+전제 조건
+- [eks.tf](./4w/eks.tf:74)의 `enable_irsa = true` 로 인해, EKS 모듈이 클러스터용 IAM OIDC Provider를 생성한다.
+- IRSA role은 이 OIDC Provider를 trust policy에서 참조한다.
+
+Trust policy 특징
+- `Federated` principal로 클러스터의 OIDC provider ARN을 신뢰한다.
+- `sts:AssumeRoleWithWebIdentity` 를 허용한다.
+- `aud = sts.amazonaws.com`
+- `sub = system:serviceaccount:default:irsa-demo`
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "<module.eks.oidc_provider_arn>"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<module.eks.oidc_provider>:aud": "sts.amazonaws.com",
+          "<module.eks.oidc_provider>:sub": "system:serviceaccount:default:irsa-demo"
+        }
+      }
+    }
+  ]
+}
+```
+
+연결 방식
+- Pod Identity처럼 별도 association 리소스를 만들지 않는다.
+- Kubernetes ServiceAccount에 아래 annotation을 넣어 역할을 연결한다.
+
+```yaml
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: <IRSA role ARN>
+    # for example...
+    # eks.amazonaws.com/role-arn: "arn:aws:iam::xxxx:role/myeks-irsa-demo"
+```
+정리
+- IAM 관점에서 IRSA는 trust policy에 클러스터별 OIDC provider와 서비스어카운트 subject 조건이 들어간다.
+- 서비스어카운트가 바뀌거나 클러스터가 바뀌면 trust policy를 함께 관리해야 한다.
+- 여러 클러스터에서 재사용하려면 trust policy에 각 클러스터 OIDC 조건을 계속 추가해야 한다.
 
 
 ## 3. Pod Identity Agent 설치 확인
@@ -215,6 +333,118 @@ ens6             UP             192.168.19.12/22
 
 ## 4. 데모 워크로드로 기능 비교
 
+### Pod Identity의 경우
+
+```bash
+❯ k apply -f pod-identity-example-workload.yaml 
+serviceaccount/pod-identity-demo created
+deployment.apps/pod-identity-demo created
+
+❯ k get po                                     
+NAME                                 READY   STATUS    RESTARTS   AGE
+pod-identity-demo-7cfd6f7f95-xh586   1/1     Running   0          14s
+
+❯ k logs pod-identity-demo-7cfd6f7f95-xh586                          
+Sun Apr 12 13:48:14 UTC 2026
+=== Pod Identity check ===
+AWS_REGION=ap-northeast-2
+AWS_DEFAULT_REGION=ap-northeast-2
+AWS_CONTAINER_CREDENTIALS_FULL_URI=http://169.254.170.23/v1/credentials
+AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token
+AWS_WEB_IDENTITY_TOKEN_FILE=unset
+AWS_ROLE_ARN=unset
+--- sts get-caller-identity ---
+{
+    "UserId": "????:eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c",
+    "Account": "xxxx",
+    "Arn": "arn:aws:sts::xxxx:assumed-role/myeks-pod-identity-demo/eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c"
+}
+--- s3api list-buckets ---
+my-bucket-1       my-bucket-2      my-bucket-3
+
+# 당시 해당 노드의 pod-identity-agent 로그
+❯ k logs -n kube-system eks-pod-identity-agent-ws5ng
+Defaulted container "eks-pod-identity-agent" out of: eks-pod-identity-agent, eks-pod-identity-agent-init (init)
+2026/04/12 12:39:06 Running command:
+Command env: (log-file=, also-stdout=false, redirect-stderr=true)
+Run from directory: 
+Executable path: /eks-pod-identity-agent
+Args (comma-delimited): /eks-pod-identity-agent,server,--port,80,--cluster-name,myeks,--probe-port,2703
+2026/04/12 12:39:06 Now listening for interrupts
+2026/04/12 12:39:06 Setting logging verbosity level to: info (4)
+{"bind-addr":"169.254.170.23:80","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"169.254.170.23:80","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"0.0.0.0:2705","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"0.0.0.0:2705","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"[fd00:ec2::23]:80","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"[fd00:ec2::23]:80","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"localhost:2703","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
+{"bind-addr":"localhost:2703","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
+{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:43854","time":"2026-04-12T13:48:15Z"}
+{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"Calling EKS Auth to fetch credentials","time":"2026-04-12T13:48:15Z"}
+{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","fetched_role_arn":"arn:aws:sts::xxxx:assumed-role/myeks-pod-identity-demo/eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c","fetched_role_id":"????:eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c","level":"info","msg":"Successfully fetched credentials from EKS Auth","request_time_ms":163,"time":"2026-04-12T13:48:15Z"}
+{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"Storing creds in cache","refreshTtl":10800000000000,"time":"2026-04-12T13:48:15Z"}
+{"client-addr":"192.168.17.240:43858","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:43858","time":"2026-04-12T13:48:16Z"}
+{"client-addr":"192.168.17.240:56284","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:56284","time":"2026-04-12T13:48:46Z"}
+{"client-addr":"192.168.17.240:56288","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:56288","time":"2026-04-12T13:48:47Z"}
+{"client-addr":"192.168.17.240:58744","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:58744","time":"2026-04-12T13:49:18Z"}
+{"client-addr":"192.168.17.240:58756","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:58756","time":"2026-04-12T13:49:19Z"}
+{"client-addr":"192.168.17.240:52450","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:52450","time":"2026-04-12T13:49:49Z"}
+{"client-addr":"192.168.17.240:52464","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:52464","time":"2026-04-12T13:49:50Z"}
+{"client-addr":"192.168.17.240:37134","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:37134","time":"2026-04-12T13:50:21Z"}
+{"client-addr":"192.168.17.240:37150","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:37150","time":"2026-04-12T13:50:22Z"}
+...
+
+# 노드에서 이렇게 확인 가능하다.
+[root@ip-192-168-18-241 ~]# curl http://169.254.170.23/v1/credentials
+Service account token cannot be empty
+```
+
+그런데 association 내용은 aws-cli로만 확인 가능하다.
+```bash
+# list는 요약이라 실제 어떤 IAM Role과 매핑되어 있는지는 안나온다.
+❯ aws eks list-pod-identity-associations \
+  --cluster-name myeks
+
+- associations:
+  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
+    associationId: a-ihms0xpcgaiivyevr
+    clusterName: myeks
+    namespace: default
+    serviceAccount: pod-identity-demo
+
+# association-id까지 포함하여 조회하면 어떤 IAM Role과 매핑되어 있는지 확인 가능.
+❯ aws eks describe-pod-identity-association \
+  --cluster-name myeks \
+  --association-id a-ihms0xpcgaiivyevr
+
+- association:
+    associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
+    associationId: a-ihms0xpcgaiivyevr
+    clusterName: myeks
+    createdAt: '2026-04-12T22:19:03.448000+09:00'
+    modifiedAt: '2026-04-12T22:19:03.448000+09:00'
+    namespace: default
+    roleArn: arn:aws:iam::xxxx:role/myeks-pod-identity-demo # 👀
+    serviceAccount: pod-identity-demo
+    tags: {}
+
+
+❯ aws eks list-pod-identity-associations \
+  --cluster-name myeks
+- associations:
+  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
+    associationId: a-ihms0xpcgaiivyevr
+    clusterName: myeks
+    namespace: default
+    serviceAccount: pod-identity-demo
+  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ioyglkwxhmcxiqryg
+    associationId: a-ioyglkwxhmcxiqryg
+    clusterName: myeks
+    namespace: default
+    serviceAccount: irsa-demo
+```
+
 ### IRSA의 경우
 
 IAM 리소스 및 k8s ServiceAccount 구성을 올바르게 했다면, 해당 SA에 명시한 Role 기준으로 권한을 받아와 사용한다.
@@ -368,120 +598,8 @@ AWS_ROLE_ARN=arn:aws:iam::xxxx:role/myeks-irsa-demo
 my-bucket-1       my-bucket-2      my-bucket-3
 ```
 
-### Pod Identity의 경우
 
-```bash
-❯ k apply -f pod-identity-example-workload.yaml 
-serviceaccount/pod-identity-demo created
-deployment.apps/pod-identity-demo created
-
-❯ k get po                                     
-NAME                                 READY   STATUS    RESTARTS   AGE
-pod-identity-demo-7cfd6f7f95-xh586   1/1     Running   0          14s
-
-❯ k logs pod-identity-demo-7cfd6f7f95-xh586                          
-Sun Apr 12 13:48:14 UTC 2026
-=== Pod Identity check ===
-AWS_REGION=ap-northeast-2
-AWS_DEFAULT_REGION=ap-northeast-2
-AWS_CONTAINER_CREDENTIALS_FULL_URI=http://169.254.170.23/v1/credentials
-AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token
-AWS_WEB_IDENTITY_TOKEN_FILE=unset
-AWS_ROLE_ARN=unset
---- sts get-caller-identity ---
-{
-    "UserId": "????:eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c",
-    "Account": "xxxx",
-    "Arn": "arn:aws:sts::xxxx:assumed-role/myeks-pod-identity-demo/eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c"
-}
---- s3api list-buckets ---
-my-bucket-1       my-bucket-2      my-bucket-3
-
-# 당시 해당 노드의 pod-identity-agent 로그
-❯ k logs -n kube-system eks-pod-identity-agent-ws5ng
-Defaulted container "eks-pod-identity-agent" out of: eks-pod-identity-agent, eks-pod-identity-agent-init (init)
-2026/04/12 12:39:06 Running command:
-Command env: (log-file=, also-stdout=false, redirect-stderr=true)
-Run from directory: 
-Executable path: /eks-pod-identity-agent
-Args (comma-delimited): /eks-pod-identity-agent,server,--port,80,--cluster-name,myeks,--probe-port,2703
-2026/04/12 12:39:06 Now listening for interrupts
-2026/04/12 12:39:06 Setting logging verbosity level to: info (4)
-{"bind-addr":"169.254.170.23:80","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"169.254.170.23:80","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"0.0.0.0:2705","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"0.0.0.0:2705","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"[fd00:ec2::23]:80","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"[fd00:ec2::23]:80","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"localhost:2703","level":"info","msg":"Pod Identity Agent version 0.1.37","time":"2026-04-12T12:39:06Z"}
-{"bind-addr":"localhost:2703","level":"info","msg":"Starting server...","time":"2026-04-12T12:39:06Z"}
-{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:43854","time":"2026-04-12T13:48:15Z"}
-{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"Calling EKS Auth to fetch credentials","time":"2026-04-12T13:48:15Z"}
-{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","fetched_role_arn":"arn:aws:sts::xxxx:assumed-role/myeks-pod-identity-demo/eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c","fetched_role_id":"????:eks-myeks-pod-identi-4a5e38d3-68b9-41c0-8c1b-3e846005ce0c","level":"info","msg":"Successfully fetched credentials from EKS Auth","request_time_ms":163,"time":"2026-04-12T13:48:15Z"}
-{"client-addr":"192.168.17.240:43854","cluster-name":"myeks","level":"info","msg":"Storing creds in cache","refreshTtl":10800000000000,"time":"2026-04-12T13:48:15Z"}
-{"client-addr":"192.168.17.240:43858","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:43858","time":"2026-04-12T13:48:16Z"}
-{"client-addr":"192.168.17.240:56284","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:56284","time":"2026-04-12T13:48:46Z"}
-{"client-addr":"192.168.17.240:56288","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:56288","time":"2026-04-12T13:48:47Z"}
-{"client-addr":"192.168.17.240:58744","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:58744","time":"2026-04-12T13:49:18Z"}
-{"client-addr":"192.168.17.240:58756","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:58756","time":"2026-04-12T13:49:19Z"}
-{"client-addr":"192.168.17.240:52450","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:52450","time":"2026-04-12T13:49:49Z"}
-{"client-addr":"192.168.17.240:52464","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:52464","time":"2026-04-12T13:49:50Z"}
-{"client-addr":"192.168.17.240:37134","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:37134","time":"2026-04-12T13:50:21Z"}
-{"client-addr":"192.168.17.240:37150","cluster-name":"myeks","level":"info","msg":"handling new request request from 192.168.17.240:37150","time":"2026-04-12T13:50:22Z"}
-...
-
-# 노드에서 이렇게 확인 가능하다.
-[root@ip-192-168-18-241 ~]# curl http://169.254.170.23/v1/credentials
-Service account token cannot be empty
-```
-
-그런데 association 내용은 aws-cli로만 확인 가능하다.
-```bash
-# list는 요약이라 실제 어떤 IAM Role과 매핑되어 있는지는 안나온다.
-❯ aws eks list-pod-identity-associations \
-  --cluster-name myeks
-
-- associations:
-  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
-    associationId: a-ihms0xpcgaiivyevr
-    clusterName: myeks
-    namespace: default
-    serviceAccount: pod-identity-demo
-
-# association-id까지 포함하여 조회하면 어떤 IAM Role과 매핑되어 있는지 확인 가능.
-❯ aws eks describe-pod-identity-association \
-  --cluster-name myeks \
-  --association-id a-ihms0xpcgaiivyevr
-
-- association:
-    associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
-    associationId: a-ihms0xpcgaiivyevr
-    clusterName: myeks
-    createdAt: '2026-04-12T22:19:03.448000+09:00'
-    modifiedAt: '2026-04-12T22:19:03.448000+09:00'
-    namespace: default
-    roleArn: arn:aws:iam::xxxx:role/myeks-pod-identity-demo # 👀
-    serviceAccount: pod-identity-demo
-    tags: {}
-
-
-❯ aws eks list-pod-identity-associations \
-  --cluster-name myeks
-- associations:
-  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ihms0xpcgaiivyevr
-    associationId: a-ihms0xpcgaiivyevr
-    clusterName: myeks
-    namespace: default
-    serviceAccount: pod-identity-demo
-  - associationArn: arn:aws:eks:ap-northeast-2:xxxx:podidentityassociation/myeks/a-ioyglkwxhmcxiqryg
-    associationId: a-ioyglkwxhmcxiqryg
-    clusterName: myeks
-    namespace: default
-    serviceAccount: irsa-demo
-```
-
-
-IRSA로 쓰던 Role을 Pod Identity로도 사용하고 싶다면?
+## IRSA로 쓰던 Role을 Pod Identity로도 사용하고 싶다면?
 
 ```json
 {
