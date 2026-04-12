@@ -559,7 +559,10 @@ An error occurred (AccessDenied) when calling the AssumeRoleWithWebIdentity oper
 An error occurred (AccessDenied) when calling the AssumeRoleWithWebIdentity operation: Not authorized to perform sts:AssumeRoleWithWebIdentity
 ```
 
-이 경우는 됩니다~
+`sts:AssumeRoleWithWebIdentity` 안에 `sub` 조건은 없어도 연동은 됩니다.
+- trust policy가 `sub`를 검사하지 않을 뿐, `aud` 조건과 OIDC provider 조건은 여전히 만족하기 때문.
+- 즉, 허용범위가 더 넓어진다고 보면 됨.
+
 ```bash
 {
     "Version": "2012-10-17",
@@ -599,8 +602,9 @@ my-bucket-1       my-bucket-2      my-bucket-3
 ```
 
 
-## IRSA로 쓰던 Role을 Pod Identity로도 사용하고 싶다면?
+## 5. IRSA로 쓰던 Role을 Pod Identity로도 사용하고 싶다면...
 
+기존에 IRSA 용도로 구성한 Role의 Trust Entities를 아래처럼, IRSA와 Pod Identity 용도를 별도 Sid로 추가해주면 된다.
 ```json
 {
 	"Version": "2012-10-17",
@@ -629,7 +633,7 @@ my-bucket-1       my-bucket-2      my-bucket-3
 				"sts:TagSession",
 				"sts:AssumeRole"
 			],
-			"Condition": {
+			"Condition": { // pod-identity의 경우는 이런 식으로 IAM Role 레벨에서 cluster/namespace/sa명 범위 제어 가능.
 				"StringLike": {
 					"aws:RequestTag/kubernetes-namespace": "default",
 					"aws:RequestTag/kubernetes-service-account": "*-demo",
@@ -641,23 +645,24 @@ my-bucket-1       my-bucket-2      my-bucket-3
 }
 ```
 
+그렇지만 podidentityassociation를 구성할 때, 어차피 풀네임 그대로 써줘야 한다. (wildcard 패턴 사용 불가능)
 ```bash
-eksctl create podidentityassociation \
+❯ eksctl create podidentityassociation \
   --cluster myeks \
   --namespace default \
   --service-account-name irsa-demo \
   --role-arn arn:aws:iam::xxxx:role/myeks-irsa-demo
+```
 
+이어서, 수정된 IRSA Role 기반으로 Pod Identity가 동작하는지 확인.
 
-eksctl delete podidentityassociation \
-  --cluster myeks \
-  --namespace default \
-  --service-account-name irsa-demo
-
+```bash
+# 다시 irsa 샘플 워크로드를 배포한다.
 ❯ k apply -f irsa-example-workload.yaml 
 serviceaccount/irsa-demo created
 deployment.apps/irsa-demo created
 
+# 이번엔 SA안에 IRSA Annotation 없음!!
 ❯ k get sa irsa-demo -o yaml           
 apiVersion: v1
 kind: ServiceAccount
@@ -674,7 +679,7 @@ metadata:
   resourceVersion: "24261"
   uid: 443fc11b-caf1-46ab-bd17-93a74cb2e34
 
-# Pod Identity를 통해 가져온다.
+# Pod Identity를 통해 가져오고 있다.
 ❯ k logs irsa-demo-58b4bcfb56-l9frp                                           
 Sun Apr 12 14:48:12 UTC 2026
 === IRSA check ===
@@ -693,7 +698,7 @@ AWS_ROLE_ARN=unset
 --- s3api list-buckets ---
 my-bucket-1       my-bucket-2      my-bucket-3
 
-# 만약 Annotation을 붙여주면?
+# 만약 SA에 다시 IRSA Annotation을 붙여주면?
 ❯ k get sa irsa-demo -o yaml           
 apiVersion: v1
 kind: ServiceAccount
@@ -710,9 +715,9 @@ metadata:
   resourceVersion: "24608"
   uid: 443fc11b-caf1-46ab-bd17-93a74cb2e348
 
+# 여전히 Pod Identity를 사용하고 있다.
 ❯ k logs irsa-demo-58b4bcfb56-l9frp
 ...
-# 여전히 pod identity 사용
 Sun Apr 12 14:50:50 UTC 2026
 === IRSA check ===
 AWS_REGION=ap-northeast-2
@@ -730,7 +735,7 @@ AWS_ROLE_ARN=unset
 --- s3api list-buckets ---
 my-bucket-1       my-bucket-2      my-bucket-3
 
-# pod 재기동 후에도 pod-identity 사용
+# pod 재기동 후에도 Pod Identity 사용
 ❯ k logs irsa-demo-6bd7c9797d-zvdv6                          
 Sun Apr 12 14:51:39 UTC 2026
 === IRSA check ===
@@ -748,7 +753,13 @@ AWS_ROLE_ARN=unset
 }
 --- s3api list-buckets ---
 my-bucket-1       my-bucket-2      my-bucket-3
+```
 
+이를 통해, IRSA 구성과 Pod Identity 구성이 모두 세팅된 경우에는 Pod Identity가 우선적으로 사용되고 있음을 알 수 있다.
+
+이어서, podidentityassociation를 지운 뒤에 다시 IRSA 형식으로 권한을 받아오는지 확인한다.
+
+```bash
 ❯ eksctl delete podidentityassociation \
   --cluster myeks \
   --namespace default \
@@ -760,7 +771,7 @@ my-bucket-1       my-bucket-2      my-bucket-3
     } }2026-04-12 23:52:52 [ℹ]  serviceaccount "default/irsa-demo" was not created by eksctl; will not be deleted
 2026-04-12 23:52:52 [ℹ]  all tasks were completed successfully
 
-# 그래도 로그는 여전히...
+# 로그를 보면 이미 구동중인 Pod는 여전히 Pod Identity 사용중.
 Sun Apr 12 14:53:45 UTC 2026
 === IRSA check ===
 AWS_REGION=ap-northeast-2
@@ -777,8 +788,17 @@ AWS_ROLE_ARN=unset
 }
 --- s3api list-buckets ---
 my-bucket-1       my-bucket-2      my-bucket-3
+```
 
+Pod Identity와 IRSA 모두, 기본적으로 약 1일정도 사용한 토큰을 받게 된다.
 
+그리고 두 방식 모드 projected service account token 기반이므로, 토큰의 ttl이 80% 기간 정도 지나게 되면 kubelet에 의해 교체된다.
+
+- https://docs.aws.amazon.com/ko_kr/eks/latest/best-practices/identity-and-access-management.html#_identities_and_credentials_for_eks_pods
+
+Pod Identity 기반으로 토큰 관련 정보를 확인해보자.
+
+```bash
 bash-4.2# cat eks-pod-identity-token 
 <JWT_HEADER>.<JWT_PAYLOAD>.<JWT_SIGNATURE>
 
@@ -797,18 +817,20 @@ bash-4.2# curl -s \
 {"AccessKeyId":"생략","SecretAccessKey":"생략","Token":"생략","AccountId":"생략","Expiration":"2026-04-12T20:51:39Z"}
 ```
 
-iat, exp는 Unix epoch 초
+`iat`, `exp`는 Unix epoch 초 단위이다.
 - 이 경우, 약 23시간 1분 16초 동안 유효
+
 ```bash
+# iat
 bash-4.2# date -d @1776005498 -u
 Sun Apr 12 14:51:38 UTC 2026
 
+# exp
 bash-4.2# date -d @1776088374 -u
 Mon Apr 13 13:52:54 UTC 2026
-
 ```
 
-재시작 후에는 IRSA 사용하는거 확인 가능.
+Pod를 재시작한 후에는 IRSA 사용하는 것을 확인할 수 있다.
 ```bash
 ❯ k logs irsa-demo-6bd7c9797d-4wjd8                          
 Sun Apr 12 15:07:02 UTC 2026
@@ -829,8 +851,23 @@ AWS_ROLE_ARN=arn:aws:iam::xxxx:role/myeks-irsa-demo
 my-bucket-1       my-bucket-2      my-bucket-3
 ```
 
-Pod Identity에 정규식을 먹일 방법은?
+## 6. Pod Identity ABAC (Attribute Based Access Control)
+
+Pod Identity는 IAM Role 레벨에서 아래 세션 태그를 통해 ABAC 구현이 가능하다.
+
+- https://docs.aws.amazon.com/ko_kr/eks/latest/best-practices/identity-and-access-management.html#_identities_and_credentials_for_eks_pods
+
+| 세션 태그 | 값 설명 |
+|---|---|
+| `kubernetes-namespace` | EKS Pod Identity와 연결된 Pod가 실행되는 네임스페이스 |
+| `kubernetes-service-account` | EKS Pod Identity와 연결된 Kubernetes 서비스 계정 이름 |
+| `eks-cluster-arn` | EKS 클러스터의 ARN. 예: `arn:${Partition}:eks:${Region}:${Account}:cluster/${ClusterName}` |
+| `eks-cluster-name` | EKS 클러스터 이름 |
+| `kubernetes-pod-name` | EKS의 Pod 이름 |
+| `kubernetes-pod-uid` | EKS의 Pod UID |
+
 ```bash
+# IAM Role의 ABAC 조건을 아래처럼 지정해보자.
 
             "Condition": {
                 "StringLike": {
@@ -840,7 +877,8 @@ Pod Identity에 정규식을 먹일 방법은?
                 }
             }
 
-# 매핑된 sa name: irsa-demo
+# 매핑된 sa name: irsa-demo <- 즉, 적용되면 안됨.
+# 밑의 로그 내용을 보아, 의도대로 적용 불가능한 것을 확인 가능.
 ❯ k logs irsa-demo-86c69675fd-5g6vm                          
 Sun Apr 12 15:09:38 UTC 2026
 === IRSA check ===
@@ -858,14 +896,16 @@ Error when retrieving credentials from container-role: Error retrieving metadata
 
 Error when retrieving credentials from container-role: Error retrieving metadata: Received non 200 response 400 from container metadata: [666daaef-0708-4e7b-9522-4bd05b05cf84]: (AccessDeniedException): Unauthorized Exception! EKS does not have permissions to assume the associated role., fault: client            
 
-# 다시 변경
+# # IAM Role의 ABAC 조건을 다시 변경.
                 "StringLike": {
                     "aws:RequestTag/kubernetes-namespace": "default",
                     "aws:RequestTag/kubernetes-service-account": "*-demo",
                     "aws:RequestTag/eks-cluster-name": "myeks"
                 }
 
-# 이후에는 잘 받아온다.
+# ServiceAccount 네이밍 패턴과 일치하므로, 조금 시간이 지나면 다시 잘 받아오는 것을 확인 가능.
+❯ k logs irsa-demo-86c69675fd-5g6vm
+...
 Sun Apr 12 15:11:28 UTC 2026
 === IRSA check ===
 AWS_REGION=ap-northeast-2
