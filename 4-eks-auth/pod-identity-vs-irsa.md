@@ -1,5 +1,25 @@
 # EKS Pod Identity vs IRSA
 
+## 목차
+
+- [EKS Pod Identity vs IRSA](#eks-pod-identity-vs-irsa)
+  - [목차](#목차)
+  - [1. 개요](#1-개요)
+    - [EKS Pod Identity 특징](#eks-pod-identity-특징)
+    - [EKS Pod Identity 설치 및 사용 과정](#eks-pod-identity-설치-및-사용-과정)
+  - [2. Pod Identity vs IRSA 상세 비교](#2-pod-identity-vs-irsa-상세-비교)
+    - [IAM 리소스 기준 비교](#iam-리소스-기준-비교)
+      - [공통으로 생성되는 IAM 리소스](#공통으로-생성되는-iam-리소스)
+      - [Pod Identity에서 생성되는 IAM 리소스](#pod-identity에서-생성되는-iam-리소스)
+      - [IRSA에서 생성되는 IAM 리소스](#irsa에서-생성되는-iam-리소스)
+  - [3. Pod Identity Agent 설치 확인](#3-pod-identity-agent-설치-확인)
+  - [4. 데모 워크로드로 기능 비교](#4-데모-워크로드로-기능-비교)
+    - [Pod Identity의 경우](#pod-identity의-경우)
+    - [IRSA의 경우](#irsa의-경우)
+  - [5. IRSA로 쓰던 Role을 Pod Identity로도 사용하고 싶다면...](#5-irsa로-쓰던-role을-pod-identity로도-사용하고-싶다면)
+  - [6. Pod Identity ABAC (Attribute Based Access Control)](#6-pod-identity-abac-attribute-based-access-control)
+  - [개인적인 생각](#개인적인-생각)
+
 ## 1. 개요
 
 ### EKS Pod Identity 특징
@@ -22,6 +42,7 @@
 - Pod Identity:
   - 새로운 클러스터가 추가될 때마다, 역할의 신뢰 정책을 새로 업데이트할 필요 x.
   - 신뢰 정책에서 IAM 역할과 서비스 계정 간의 신뢰 관계를 정의할 필요 x.
+  - 하나의 EKS 클러스터당 최대 5000개의 `podidentityassociation` 생성 가능 (https://docs.aws.amazon.com/ko_kr/eks/latest/userguide/pod-identities.html#pod-id-limits)
 - IRSA:
   - 새로운 EKS 클러스터 OIDC 공급자 엔드포인트를 사용하여, 역할의 신뢰 정책을 업데이트 필요.
   - 신뢰 정책에서 IAM 역할과 서비스 계정 간의 신뢰 관계를 정의해야 한다. 신뢰 정책 크기 제한으로 인해, 단일 신뢰 정책 내에는 최대 8개의 신뢰 관계만 정의할 수 있다.
@@ -115,7 +136,7 @@ Trust policy 특징
 #### IRSA에서 생성되는 IAM 리소스
 
 전제 조건
-- [eks.tf](./4w/eks.tf:74)의 `enable_irsa = true` 로 인해, EKS 모듈이 클러스터용 IAM OIDC Provider를 생성한다.
+- [eks.tf](./4w/eks.tf)의 `enable_irsa = true` 로 인해, EKS 모듈이 클러스터용 IAM OIDC Provider를 생성한다.
 - IRSA role은 이 OIDC Provider를 trust policy에서 참조한다.
 
 Trust policy 특징
@@ -925,3 +946,24 @@ AWS_ROLE_ARN=unset
 --- s3api list-buckets ---
 my-bucket-1       my-bucket-2      my-bucket-3              
 ```
+
+## 개인적인 생각
+
+Pod Identity로 연동하는 경우에는 IRSA 방식때에 필요했던 ServiceAccount에 arn 명시하는게 빠지게 되므로, k8s 리소스 레벨에서 보면 좀 더 간소화가 가능해보인다. 대신, 어떤 SA가 IAM Role에 연동되는지는 `podidentityassociation` 라는 AWS Managed 영역에 명시해줘야 한다.
+
+IRSA의 경우에는 IAM Role, Policy까지만 AWS 영역이었으나 Pod Identity의 경우에는 ServiceAccount와 AWS IAM Role 개수에 비례하여 `podidentityassociation` 리소스 개수가 증가하게 된다.
+- OIDC Provider는 EKS Cluster 기준으로 늘어나지만, 아무래도 일반적인 경우 클러스터 개수보단 ServiceAccount나 Role 개수가 더 많을 것으로 보임.
+
+일정 규모 이상에서는 `podidentityassociation`에 대한 관리 혼선이 올 수 있을 것 같다. 최악의 경우로 비교하자면...
+
+- IRSA: 100개의 EKS 클러스터까지만 지원되지만 SA는 무한히 사용 가능.
+- Pod Identity: EKS 클러스터는 무한히 늘릴 수 있지만, 한 클러스터당 5000개까지의 SA만 연동 가능.
+
+Pod에서 연동이 안되는 상황일 때의 디버깅 기준으로 보자면
+
+- IRSA: Pod에 연동된 SA 확인 -> SA에 등록된 annotation으로 IAM Role 확인 (여기서 오타 있는지도 확인) -> IAM Role/Policy 내용 확인
+- Pod Identity: Pod에 연동된 SA 확인 -> 근데 이 SA는 어느 Role에 연결된거지? -> k8s 바깥 레벨에서 `podidentityassociation` 내용 확인 -> IAM Role/Policy 내용 확인
+
+IRSA가 편하다고 생각하진 않지만, 그렇다고 무조건 Pod Identity 사용으로 바꿀 당위성은 또 크진 않은 것 같고...
+
+현재 구조 및 앞으로의 확장성을 생각해봤을 때, Pod Identity쪽이 더 편해지겠다 싶으면 넘어가도 괜찮을 것 같다.
