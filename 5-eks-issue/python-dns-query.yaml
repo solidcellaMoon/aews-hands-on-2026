@@ -1,0 +1,200 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: python-dns-query-config
+  labels:
+    app: dns-query
+data:
+  dns-query.py: |
+    import socket
+    import struct
+    import time
+
+    # DNS 서버와 도메인 정보
+    dns_server = '10.43.0.10'   # coreDNS 서비스의 ClusterIP
+    query = 'kubernetes.default.svc.cluster.local'     # 쿼리할 도메인
+    src_port = 5353           # 고정할 소스 포트
+    interval = 10              # 요청 간격 (초)
+    duration = 30 * 60        # 30분 동안 실행 (초 단위)
+    timeout = 5               # 타임아웃 시간 (초)
+
+    RCODE_NAMES = {
+        0: "NOERROR",
+        1: "FORMERR",
+        2: "SERVFAIL",
+        3: "NXDOMAIN",
+        4: "NOTIMP",
+        5: "REFUSED",
+    }
+
+    QTYPE_NAMES = {
+        1: "A",
+        2: "NS",
+        5: "CNAME",
+        28: "AAAA",
+    }
+
+    # DNS 쿼리 생성 (간단한 A 레코드 요청)
+    def build_dns_query(domain):
+        # Transaction ID (2 bytes), Flags (2 bytes)
+        header = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+
+        # Query section (QNAME, QTYPE, QCLASS)
+        query = b''.join([struct.pack("B", len(label)) + label.encode() for label in domain.split('.')])
+        query += b'\x00'  # Null byte to end the QNAME
+        query += struct.pack(">HH", 1, 1)  # QTYPE A (1), QCLASS IN (1)
+
+        return header + query
+
+    def read_name(message, offset):
+        labels = []
+        jumped = False
+        next_offset = offset
+
+        while True:
+            length = message[offset]
+
+            # DNS name compression pointer
+            if length & 0xC0 == 0xC0:
+                pointer = struct.unpack_from(">H", message, offset)[0] & 0x3FFF
+                if not jumped:
+                    next_offset = offset + 2
+                offset = pointer
+                jumped = True
+                continue
+
+            if length == 0:
+                offset += 1
+                if not jumped:
+                    next_offset = offset
+                break
+
+            offset += 1
+            labels.append(message[offset:offset + length].decode("ascii", errors="replace"))
+            offset += length
+
+        return ".".join(labels), next_offset
+
+    def parse_dns_response(response):
+        transaction_id, flags, qdcount, ancount, nscount, arcount = struct.unpack_from(">HHHHHH", response, 0)
+        rcode = flags & 0x000F
+        offset = 12
+        questions = []
+        answers = []
+
+        for _ in range(qdcount):
+            qname, offset = read_name(response, offset)
+            qtype, qclass = struct.unpack_from(">HH", response, offset)
+            offset += 4
+            questions.append(f"{qname} {QTYPE_NAMES.get(qtype, qtype)}")
+
+        for _ in range(ancount):
+            name, offset = read_name(response, offset)
+            rtype, rclass, ttl, rdlength = struct.unpack_from(">HHIH", response, offset)
+            offset += 10
+            rdata_offset = offset
+            offset += rdlength
+
+            if rtype == 1 and rdlength == 4:
+                value = socket.inet_ntoa(response[rdata_offset:rdata_offset + rdlength])
+                answers.append(f"{name} A {value} ttl={ttl}")
+            elif rtype == 5:
+                value, _ = read_name(response, rdata_offset)
+                answers.append(f"{name} CNAME {value} ttl={ttl}")
+            else:
+                answers.append(f"{name} {QTYPE_NAMES.get(rtype, rtype)} {rdlength}bytes ttl={ttl}")
+
+        ips = [
+            answer.split()[2]
+            for answer in answers
+            if " A " in f" {answer} "
+        ]
+
+        return {
+            "transaction_id": f"0x{transaction_id:04x}",
+            "rcode": RCODE_NAMES.get(rcode, f"RCODE{rcode}"),
+            "questions": questions,
+            "answer_count": ancount,
+            "authority_count": nscount,
+            "additional_count": arcount,
+            "answers": answers,
+            "ips": ips,
+        }
+
+    # UDP 소켓 생성 및 소스 포트 바인딩
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('', src_port))  # 소스 포트를 고정
+    sock.settimeout(timeout)   # 5초 타임아웃 설정
+
+    # 10초 간격으로 30분 동안 쿼리 전송
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        try:
+            # DNS 쿼리 생성 및 전송
+            dns_query = build_dns_query(query)
+            started_at = time.time()
+            sock.sendto(dns_query, (dns_server, 53))  # DNS 서버에 쿼리 전송
+
+            # 응답 수신 및 출력
+            response, addr = sock.recvfrom(512)  # 최대 512바이트 응답 수신
+            elapsed_ms = (time.time() - started_at) * 1000
+            parsed = parse_dns_response(response)
+            answer_summary = "; ".join(parsed["answers"]) if parsed["answers"] else "none"
+            ip_summary = ",".join(parsed["ips"]) if parsed["ips"] else "none"
+            print(
+                "Success: "
+                f"query={query} "
+                f"server={addr[0]}:{addr[1]} "
+                f"rcode={parsed['rcode']} "
+                f"answers={parsed['answer_count']} "
+                f"latency_ms={elapsed_ms:.1f} "
+                f"resolved_ips={ip_summary} "
+                f"records=\"{answer_summary}\"",
+                flush=True,
+            )
+
+        except socket.timeout:
+            # 5초 동안 응답이 없으면 타임아웃 처리
+            print("Failed: Timeout after 5 seconds", flush=True)
+        except Exception as e:
+            print(f"Failed: {type(e).__name__}: {e}", flush=True)
+
+        # 10초 대기
+        time.sleep(interval)
+
+    sock.close()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-dns-query
+  labels:
+    app: dns-query
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: dns-query
+  template:
+    metadata:
+      labels:
+        app: dns-query
+    spec:
+      containers:
+      - name: python-dns-query
+        image: python:latest # python:alpine 도 가능
+        command: ["python", "/app/dns-query.py"]
+        volumeMounts:
+        - name: script-volume
+          mountPath: /app
+        lifecycle:
+          postStart:
+            exec:
+              command: ["/bin/sh", "-c", "pip install dnspython"]
+      volumes:
+      - name: script-volume
+        configMap:
+          name: python-dns-query-config
+          items:
+          - key: dns-query.py
+            path: dns-query.py
