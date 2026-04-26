@@ -33,7 +33,9 @@
 
 ## 1. Kargo 란?
 
-Kubernetes 환경에서 GitOps 방식으로 **환경 간 Promotion**을 관리하는 오픈소스 도구. 여기서 Promotion은 애플리케이션 변경 사항을 `dev -> test -> uat -> prod` 같은 여러 단계로 전파하는 과정이다.
+Kubernetes 환경에서 GitOps 방식으로 **환경 간 Promotion**을 관리하는 오픈소스 도구. 
+<br>
+여기서 Promotion은 애플리케이션 변경 사항을 `dev -> test -> uat -> prod` 같은 여러 단계로 전파하는 과정이다.
 
 - 예를 들어, 새로운 컨테이너 이미지 태그나 Git commit을 test 환경에서 검증한 뒤,
 - 같은 버전 조합을 uat와 prod로 순차적으로 올리는 작업이 Promotion이다.
