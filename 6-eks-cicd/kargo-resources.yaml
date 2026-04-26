@@ -12,9 +12,9 @@ metadata:
   labels:
     kargo.akuity.io/cred-type: git # 👀
 stringData: # 👀
-  repoURL: ${GITOPS_REPO_URL}
-  username: ${GITHUB_USERNAME}
-  password: ${GITHUB_PAT}
+  repoURL: "https://github.com/<your-github-username>/<your-target-repository>"
+  username: "<your-github-username>"
+  password: "<your-personal-access-token>"
 ---
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Warehouse # 👀
@@ -36,7 +36,7 @@ metadata:
 spec:
   vars:
   - name: gitopsRepo
-    value: ${GITOPS_REPO_URL}
+    value: "https://github.com/<your-github-username>/<your-target-repository>"
   - name: imageRepo
     value: public.ecr.aws/nginx/nginx
   steps:
