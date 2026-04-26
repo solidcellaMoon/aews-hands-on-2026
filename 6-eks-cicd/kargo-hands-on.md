@@ -2,6 +2,8 @@
 
 - https://docs.kargo.io/quickstart
 
+## 초기 환경 세팅
+
 자주 사용하는 로컬 환경 k8s 툴에서 바로 실습 환경 세팅하는 스크립트를 제공하고 있다.
 - 여기서는 k3d를 사용한다. (전체 삭제 / 다시 생성이 용이하기 때문)
 
@@ -213,4 +215,275 @@ spec:
         syncOptions:
         - CreateNamespace=true
 EOF
+---
+# 나의 경우는 파일로 수정 후 배포함.
+❯ k apply -f argo-appset.yaml                 
+applicationset.argoproj.io/kargo-demo created
 ```
+
+이 단계에서는 생성된 ArgoCD App들이 `Unknown` 상태인게 정상이라고 함.
+- 이후, Kargo를 통해 첫 번째로 프로모션 진행 시, 해당 네이밍의 브랜치를 생성한다고 함.
+
+## Kargo Project, Pipeline을 만들어보자.
+
+필요한 리소스는 [`kargo-resources.yaml`](./kargo-resources.yaml) 참고
+
+`Warehouse`: 컨테이너 이미지 레지스트리에서 특정 이미지에 대한 새 버전/태그가 있는지 확인
+```yaml
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse # 👀
+metadata:
+  name: kargo-demo
+  namespace: kargo-demo
+spec:
+  subscriptions:
+  - image:
+      repoURL: public.ecr.aws/nginx/nginx # 👀
+      constraint: ^1.29.0
+      discoveryLimit: 5
+```
+
+`PromotionTask`: 재활용 가능한 프로모션 프로세스 선언
+```yaml
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask # 👀
+metadata:
+  name: demo-promo-process
+  namespace: kargo-demo
+spec:
+  vars:
+  - name: gitopsRepo
+    value: ${GITOPS_REPO_URL}
+  - name: imageRepo
+    value: public.ecr.aws/nginx/nginx
+  steps:
+  - uses: git-clone # 👀
+    config:
+      repoURL: \${{ vars.gitopsRepo }}
+      checkout:
+      - branch: main
+        path: ./src
+      - branch: stage/\${{ ctx.stage }}
+        create: true
+        path: ./out
+  - uses: git-clear # 👀
+    config:
+      path: ./out
+  - uses: kustomize-set-image # 👀
+    as: update
+    config:
+      path: ./src/6-eks-cicd/kargo-demo/base
+      images:
+      - image: \${{ vars.imageRepo }}
+        tag: \${{ imageFrom(vars.imageRepo).Tag }}
+  - uses: kustomize-build # 👀
+    config:
+      path: ./src/6-eks-cicd/kargo-demo/stages/\${{ ctx.stage }}
+      outPath: ./out
+  - uses: git-commit # 👀
+    as: commit
+    config:
+      path: ./out
+      message: \${{ task.outputs.update.commitMessage }}
+  - uses: git-push # 👀
+    config:
+      path: ./out
+  - uses: argocd-update # 👀
+    config:
+      apps:
+      - name: kargo-demo-\${{ ctx.stage }}
+        sources:
+        - repoURL: \${{ vars.gitopsRepo }}
+          desiredRevision: \${{ task.outputs.commit.commit }}
+```
+
+
+`Stage`: 파이프라인 환경?
+```yaml
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage # 👀
+metadata:
+  name: test # 👀
+  namespace: kargo-demo
+spec:
+  requestedFreight: # 👀
+  - origin:
+      kind: Warehouse
+      name: kargo-demo
+    sources:
+      direct: true
+  promotionTemplate:
+    spec:
+      steps:
+      - task:
+          name: demo-promo-process
+        as: promo-process
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage # 👀
+metadata:
+  name: uat # 👀
+  namespace: kargo-demo
+spec:
+  requestedFreight:
+  - origin:
+      kind: Warehouse
+      name: kargo-demo
+    sources:
+      stages:
+      - test
+  promotionTemplate:
+    spec:
+      steps:
+      - task:
+          name: demo-promo-process
+        as: promo-process
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage # 👀
+metadata:
+  name: prod # 👀
+  namespace: kargo-demo
+spec:
+  requestedFreight:
+  - origin:
+      kind: Warehouse
+      name: kargo-demo
+    sources:
+      stages:
+      - uat
+  promotionTemplate:
+    spec:
+      steps:
+      - task:
+          name: demo-promo-process
+        as: promo-process
+```
+
+이미 ns가 있으면 뭔가 다르게 해야하는 듯
+```bash
+❯ k apply -f kargo-resources.yaml 
+Error from server (Conflict): error when creating "kargo-resources.yaml": admission webhook "project.kargo.akuity.io" denied the request: Operation cannot be fulfilled on projects.kargo.akuity.io "kargo-demo": failed to initialize Project "kargo-demo" because namespace "kargo-demo" already exists and is not labeled as a Project namespace
+Error from server (Invalid): error when creating "kargo-resources.yaml": admission webhook "warehouse.kargo.akuity.io" denied the request: Warehouse.kargo.akuity.io "kargo-demo" is invalid: metadata.namespace: Invalid value: "kargo-demo": namespace "kargo-demo" is not a project
+Error from server (Invalid): error when creating "kargo-resources.yaml": admission webhook "promotiontask.kargo.akuity.io" denied the request: PromotionTask.kargo.akuity.io "demo-promo-process" is invalid: metadata.namespace: Invalid value: "kargo-demo": namespace "kargo-demo" is not a project
+Error from server (Invalid): error when creating "kargo-resources.yaml": admission webhook "stage.kargo.akuity.io" denied the request: Stage.kargo.akuity.io "test" is invalid: metadata.namespace: Invalid value: "kargo-demo": namespace "kargo-demo" is not a project
+Error from server (Invalid): error when creating "kargo-resources.yaml": admission webhook "stage.kargo.akuity.io" denied the request: Stage.kargo.akuity.io "uat" is invalid: metadata.namespace: Invalid value: "kargo-demo": namespace "kargo-demo" is not a project
+Error from server (Invalid): error when creating "kargo-resources.yaml": admission webhook "stage.kargo.akuity.io" denied the request: Stage.kargo.akuity.io "prod" is invalid: metadata.namespace: Invalid value: "kargo-demo": namespace "kargo-demo" is not a project
+```
+
+성공
+```bash
+❯ k apply -f kargo-resources.yaml
+project.kargo.akuity.io/kargo-demo created
+secret/kargo-demo-repo created
+warehouse.kargo.akuity.io/kargo-demo created
+promotiontask.kargo.akuity.io/demo-promo-process created
+stage.kargo.akuity.io/test created
+stage.kargo.akuity.io/uat created
+stage.kargo.akuity.io/prod created
+```
+
+### Kargo UI에서 확인
+
+프로젝트가 확인됨.
+
+![](./img/image-1.png)
+
+상세 확인
+
+![](./img/image-2.png)
+
+파이프라인이 잘 만들어졌으니 `Freight`(화물)을 Promote 할 수 있다고..
+
+## Freight를 Test Stage로 배포?
+
+상단에 있는게 `Freight` 이고, 이걸 Web UI 상에선 드래그/드롭으로 배포 대상 환경으로 옮기면 된다고 한다. (사진 참고)
+
+![](./img/image-3.png)
+
+드래그/드롭이 아니라 메뉴 바를 통한 옮기기도 된다고 함.
+  
+배포 대상 환경 우측 상단의 트럭 아이콘 -> "Promote" 클릭
+
+![](./img/image-4.png)
+
+그럼 상단에서 `Freight`를 옮길 수 있다고 함.
+
+![](./img/image-5.png)
+
+이후 진행 내용에 대한 요약이 나온다. (위의 드래그/드롭 형식도 똑같음)
+
+![](./img/image-6.png)
+
+yaml 내용은 아래와 같음.
+
+```yaml
+metadata:
+  name: fd46ed19ff245820c7487e2ae7b727c92e470ebc
+  namespace: kargo-demo
+  uid: a89fba80-1196-4569-8a33-713d946603b0
+  resourceVersion: "3305"
+  generation: "1"
+  creationTimestamp:
+    seconds: "1777188977"
+  labels:
+    kargo.akuity.io/alias: solitary-molly
+images:
+  - repoURL: public.ecr.aws/nginx/nginx
+    tag: 1.30.0
+    digest: sha256:4193e7cf6311a0fc24342ab16bb3cd0eead145d01292fecac2b0d61a4d14d988
+status: {}
+alias: solitary-molly
+origin:
+  kind: Warehouse
+  name: kargo-demo
+```
+
+잘 진행되면 아래처럼 뜬다...
+
+![](./img/image-7.png)
+
+ArgoCD에서도 Test 환경 App이 정상 Sync 되었고, App 구성 요약은 아래처럼 됨.
+- 해당 타겟에 배포 리소스 Manifest들이 렌더링 다 끝난 형태로 들어있음.
+```yaml
+project: default
+source:
+  repoURL: https://github.com/solidcellamoon/aews-hands-on-2026
+  path: .
+  targetRevision: stage/test
+destination:
+  server: https://kubernetes.default.svc
+  namespace: kargo-demo-test
+syncPolicy:
+  syncOptions:
+    - CreateNamespace=true
+```
+
+배포된 후 kargo
+- Freight는 현재 배포된 환경의 컬러를 따라감. (상단에 Test 환경이랑 똑같이 초록색 선으로 표시된거 참고)
+
+![](./img/image-8.png)
+
+
+이후의 uat, prod 환경 배포도 동일하게 진행.
+```bash
+❯ k get ns
+NAME                     STATUS   AGE
+argo-rollouts            Active   76m
+argocd                   Active   77m
+cert-manager             Active   77m
+default                  Active   77m
+kargo                    Active   76m
+kargo-cluster-secrets    Active   76m
+kargo-demo               Active   24m
+kargo-demo-prod          Active   8m32s
+kargo-demo-test          Active   20m
+kargo-demo-uat           Active   9m4s
+kargo-shared-resources   Active   76m
+kargo-system-resources   Active   76m
+kube-node-lease          Active   77m
+kube-public              Active   77m
+kube-system              Active   77m
+
+```
+
