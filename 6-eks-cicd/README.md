@@ -32,14 +32,17 @@
     - [실습 환경 삭제](#실습-환경-삭제)
 
 ## 1. Kargo 란?
-- Kubernetes 환경에서 GitOps 방식으로 **환경 간 Promotion**을 관리하는 오픈소스 도구.
-  
-여기서 Promotion은 애플리케이션 변경 사항을 `dev -> test -> uat -> prod` 같은 여러 단계로 전파하는 과정이다.
-- 예를 들어, 새로운 컨테이너 이미지 태그나 Git commit을 test 환경에서 검증한 뒤, 같은 버전 조합을 uat와 prod로 순차적으로 올리는 작업이 Promotion이다.
+
+Kubernetes 환경에서 GitOps 방식으로 **환경 간 Promotion**을 관리하는 오픈소스 도구. 여기서 Promotion은 애플리케이션 변경 사항을 `dev -> test -> uat -> prod` 같은 여러 단계로 전파하는 과정이다.
+
+- 예를 들어, 새로운 컨테이너 이미지 태그나 Git commit을 test 환경에서 검증한 뒤,
+- 같은 버전 조합을 uat와 prod로 순차적으로 올리는 작업이 Promotion이다.
+
 
 Kargo는 ArgoCD를 대체하는 것이 아니라 보완하는 방향의 툴로 만들어져 있다.
 - ArgoCD: Git에 선언된 desired state를 Kubernetes 클러스터의 actual state로 동기화.
 - Kargo: 어떤 artifact revision을 어떤 Stage로 승격할지, 그 과정에서 GitOps repo를 어떻게 바꾸고 검증/승인할지 관리.
+
 
 ### 만들어진 배경
 
@@ -52,7 +55,9 @@ GitOps 자체는 여러 환경 사이의 변경 전파 방식까지 표준화해
 - 수동 cherry-pick, 수동 PR, 수동 image tag 변경이 섞이면 어떤 버전이 어디까지 갔는지 추적 어려움.
 - Stage별 승인, 검증, 이력을 일관된 모델로 관리하기 어려움.
 
-Kargo는 이 문제를 해결하기 위해 `Project`, `Warehouse`, `Stage`, `Promotion` 같은 Kubernetes CRD로 Promotion Pipeline을 모델링한다. 그리고 Git commit, image tag, Helm chart 같은 artifact revision을 `Freight`라는 개념으로 묶어 Stage 간에 이동시킨다.
+Kargo는 이 문제를 해결하기 위해 `Project`, `Warehouse`, `Stage`, `Promotion` 같은 Kubernetes CRD로 Promotion Pipeline을 모델링한다.
+<br>
+그리고 Git commit, image tag, Helm chart 같은 artifact revision을 `Freight`라는 개념으로 묶어 Stage 간에 이동시킨다.
 
 (참고) Akuity
 - Kargo의 관리 주체인 Akuity는 Argo 프로젝트 공동 창시자들이 만든 회사임.
@@ -558,7 +563,9 @@ No resources found in kargo-shared-resources namespace.
 No resources found in kargo-system-resources namespace.
 ```
 
-이어서 데모 실습을 위해 미리 제공되는 배포 Manifest 예제가 구성된 [Repo](https://github.com/akuity/kargo-demo)를 Fork하여 사용하라고 한다. 하지만 여기서는 위 Repo 내용을 그대로 가져와 [./kargo-demo](./kargo-demo/) 안에 넣어두었음.
+이어서 데모 실습을 위해 미리 제공되는 배포 Manifest 예제가 구성된 [Repo](https://github.com/akuity/kargo-demo)를 Fork하여 사용하라고 한다.
+<br>
+하지만 여기서는 위 Repo 내용을 그대로 가져와 [./kargo-demo](./kargo-demo/) 안에 넣어두었음.
 
 또한, 해당 Repo에 대한 Personal Access Token이 필요하다.
 - Kargo가 환경별 변경 사항을 Manifest Repo에 Push하기 때문. 원하는 Repo에 대한 Write 권한이 필요하다.
@@ -807,6 +814,8 @@ origin:
   name: kargo-demo
 ```
 
+<br>
+
 잘 진행되면 아래처럼 결과를 확인할 수 있다. 중간에 실패하는 경우에는, 어느 지점에서 실패했는지 표시됨.
 
 ![](./img/image-7.png)
@@ -834,6 +843,8 @@ drwxrwxrwx    1 root     root             0 Apr 26 08:34 .
 drwxr-xr-x    1 root     root            20 Apr 26 07:02 ..
 ```
 
+<br>
+
 ArgoCD에서도 Test 환경 App이 정상 Sync 되었고, App 구성 요약은 아래처럼 됨.
 - 해당 타겟에 배포 리소스 Manifest들이 렌더링 다 끝난 형태로 들어있음.
 ```yaml
@@ -850,10 +861,14 @@ syncPolicy:
     - CreateNamespace=true
 ```
 
+<br>
+
 배포된 후 kargo UI
 - Freight는 현재 배포된 환경의 컬러를 따라감. (상단에 Test 환경이랑 똑같이 초록색 선으로 표시된거 참고)
 
 ![](./img/image-8.png)
+
+<br>
 
 이후의 uat, prod 환경 배포도 동일하게 진행할 수 있다.
 - Freight에 표시된 색상을 보면, 모든 Stage에 다 Promote 완료된 것을 알 수 있음.
