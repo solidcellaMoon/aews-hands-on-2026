@@ -168,6 +168,37 @@ Kargo
 - URL: http://localhost:31081
 - Password: admin
 
+```bash
+❯ k get ns  
+NAME                     STATUS   AGE
+argo-rollouts            Active   34m
+argocd                   Active   34m
+cert-manager             Active   35m
+default                  Active   35m
+kargo                    Active   33m
+kargo-cluster-secrets    Active   33m
+kargo-shared-resources   Active   33m
+kargo-system-resources   Active   33m
+kube-node-lease          Active   35m
+kube-public              Active   35m
+kube-system              Active   35m
+
+❯ k get po -n kargo 
+NAME                                              READY   STATUS      RESTARTS   AGE
+kargo-api-759b7cf4fd-p7nvc                        1/1     Running     0          33m
+kargo-controller-fd4cbbffd-9k949                  1/1     Running     0          33m
+kargo-external-webhooks-server-68d66d55ff-45bm9   1/1     Running     0          33m
+kargo-garbage-collector-29619840-crsd7            0/1     Completed   0          6m
+kargo-management-controller-cfb58b669-9vdms       1/1     Running     0          33m
+kargo-webhooks-server-6f7f87c878-mxr4b            1/1     Running     0          33m
+
+❯ k get po -n kargo-shared-resources 
+No resources found in kargo-shared-resources namespace.
+
+❯ k get po -n kargo-system-resources 
+No resources found in kargo-system-resources namespace.
+```
+
 이어서 데모 실습을 위해 미리 제공되는 배포 Manifest 예제가 구성된 [Repo](https://github.com/akuity/kargo-demo)를 Fork하여 사용하라고 한다.
 하지만 여기서는 위 Repo 내용을 그대로 가져와 [./kargo-demo](./kargo-demo/) 안에 넣어두었음.
 
@@ -437,6 +468,29 @@ alias: solitary-molly
 origin:
   kind: Warehouse
   name: kargo-demo
+```
+
+저 파이프라인 같은 Task들은 실제로는 kargo-controller 안에서 수행된다.
+```bash
+/tmp $ ls -al
+total 0
+drwxrwxrwx    1 root     root            92 Apr 26 08:34 .
+drwxr-xr-x    1 root     root            20 Apr 26 07:02 ..
+drwx------    1 nonroot  nonroot         30 Apr 26 08:34 promotion-17e666af-8615-42c9-a117-b8160ae7055e
+/tmp $ ls -al
+total 0
+drwxrwxrwx    1 root     root            92 Apr 26 08:34 .
+drwxr-xr-x    1 root     root            20 Apr 26 07:02 ..
+drwx------    1 nonroot  nonroot         36 Apr 26 08:34 promotion-17e666af-8615-42c9-a117-b8160ae7055e
+/tmp $ ls -al
+total 0
+drwxrwxrwx    1 root     root            92 Apr 26 08:34 .
+drwxr-xr-x    1 root     root            20 Apr 26 07:02 ..
+drwx------    1 nonroot  nonroot         42 Apr 26 08:34 promotion-17e666af-8615-42c9-a117-b8160ae7055e
+/tmp $ ls -al
+total 0
+drwxrwxrwx    1 root     root             0 Apr 26 08:34 .
+drwxr-xr-x    1 root     root            20 Apr 26 07:02 ..
 ```
 
 
