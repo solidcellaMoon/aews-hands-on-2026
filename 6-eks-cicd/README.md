@@ -256,6 +256,18 @@ flowchart TB
   ctrl --> ext
   ctrl --> argocd
   argocd --> target
+
+  classDef userStyle fill:#fefce8,stroke:#ca8a04,color:#111827
+  classDef kargoStyle fill:#eef6ff,stroke:#3b82f6,color:#111827
+  classDef k8sStyle fill:#f7f7f7,stroke:#6b7280,color:#111827
+  classDef argoStyle fill:#ecfdf5,stroke:#10b981,color:#111827
+  classDef externalStyle fill:#fff7ed,stroke:#f97316,color:#111827
+
+  class user userStyle
+  class api,ctrl,mgmt,kwh,gc,crd kargoStyle
+  class kapi k8sStyle
+  class argocd,target argoStyle
+  class ext externalStyle
 ```
 
 이 구성은 테스트, 실습, 소규모 환경에 적합하다. (hands-on에서 설치한 형태도 이 방식)
